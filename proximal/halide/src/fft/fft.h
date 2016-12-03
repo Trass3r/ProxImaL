@@ -81,6 +81,9 @@ Halide::Func fft2d_c2r(ComplexFunc c, int N0, int N1,
 
 namespace {
 
+#ifndef M_PI
+#define M_PI 3.14159265358979310000
+#endif
 const float kPi = static_cast<float>(M_PI);
 
 // This variable is used throughout the FFT code. It represents groups of
@@ -139,17 +142,17 @@ vector<Expr> A(vector<Expr> l, const vector<T> &r) {
 
 // Get call references to the first N elements of dimension dim of x. If temps
 // is set, grab references to elements [-N, -1] instead.
-typedef FuncRefExprT<ComplexExpr> ComplexFuncRefExpr;
-vector<ComplexFuncRefExpr> get_func_refs(ComplexFunc x, int N, bool temps = false) {
+typedef FuncRefT<ComplexExpr> ComplexFuncRef;
+vector<ComplexFuncRef> get_func_refs(ComplexFunc x, int N, bool temps = false) {
     vector<Var> args(x.args());
     args.erase(args.begin());
 
-    vector<ComplexFuncRefExpr> refs;
+    vector<ComplexFuncRef> refs;
     for (int i = 0; i < N; i++) {
         if (temps) {
-            refs.push_back(x(A({Expr(-i - 1)}, args)));
+            refs.push_back(x(A({ Expr(-i - 1) }, args)));
         } else {
-            refs.push_back(x(A({Expr(i)}, args)));
+            refs.push_back(x(A({ Expr(i) }, args)));
         }
     }
     return refs;
@@ -168,8 +171,8 @@ ComplexFunc dft2(ComplexFunc f, const string& prefix) {
     ComplexFunc F(prefix + "X2");
     F(f.args()) = undef_z(type);
 
-    vector<ComplexFuncRefExpr> x = get_func_refs(f, 2);
-    vector<ComplexFuncRefExpr> X = get_func_refs(F, 2);
+    vector<ComplexFuncRef> x = get_func_refs(f, 2);
+    vector<ComplexFuncRef> X = get_func_refs(F, 2);
 
     X[0] = x[0] + x[1];
     X[1] = x[0] - x[1];
@@ -183,9 +186,9 @@ ComplexFunc dft4(ComplexFunc f, int sign, const string& prefix) {
     ComplexFunc F(prefix + "X4");
     F(f.args()) = undef_z(type);
 
-    vector<ComplexFuncRefExpr> x = get_func_refs(f, 4);
-    vector<ComplexFuncRefExpr> X = get_func_refs(F, 4);
-    vector<ComplexFuncRefExpr> T = get_func_refs(F, 2, true);
+    vector<ComplexFuncRef> x = get_func_refs(f, 4);
+    vector<ComplexFuncRef> X = get_func_refs(F, 4);
+    vector<ComplexFuncRef> T = get_func_refs(F, 2, true);
     // We can re-use these two temps. T[0], T[2] and T[1], T[3] do not have
     // overlapping lifetime.
     T.push_back(T[1]);
@@ -204,6 +207,42 @@ ComplexFunc dft4(ComplexFunc f, int sign, const string& prefix) {
     return F;
 }
 
+ComplexFunc dft6(ComplexFunc f, int sign, const string& prefix) {
+    const float re_W1_3 = -0.5f;
+    const float im_W1_3 = sign*0.866025404;
+
+    ComplexExpr W1_3(re_W1_3, im_W1_3);
+    ComplexExpr W2_3(re_W1_3, -im_W1_3);
+    ComplexExpr W4_3 = W1_3;
+
+    Type type = f.output_types()[0];
+
+    ComplexFunc F(prefix + "X8");
+    F(f.args()) = undef_z(type);
+
+    vector<ComplexFuncRef> x = get_func_refs(f, 6);
+    vector<ComplexFuncRef> X = get_func_refs(F, 6);
+    vector<ComplexFuncRef> T = get_func_refs(F, 6, true);
+
+    // Prime factor FFT, N=2*3, no twiddle factors!
+    T[0] = (x[0] + x[3]);
+    T[3] = (x[0] - x[3]);
+    T[1] = (x[1] + x[4]);
+    T[4] = (x[1] - x[4]);
+    T[2] = (x[2] + x[5]);
+    T[5] = (x[2] - x[5]);
+
+    X[0] = T[0] + T[2] + T[1];
+    X[4] = T[0] + T[2] * W1_3 + T[1] * W2_3;
+    X[2] = T[0] + T[2] * W2_3 + T[1] * W4_3;
+
+    X[3] = T[3] + T[5] - T[4];
+    X[1] = T[3] + T[5] * W1_3 - T[4] * W2_3;
+    X[5] = T[3] + T[5] * W2_3 - T[4] * W4_3;
+
+    return F;
+}
+
 ComplexFunc dft8(ComplexFunc f, int sign, const string& prefix) {
     const float sqrt2_2 = 0.70710678f;
 
@@ -212,9 +251,9 @@ ComplexFunc dft8(ComplexFunc f, int sign, const string& prefix) {
     ComplexFunc F(prefix + "X8");
     F(f.args()) = undef_z(type);
 
-    vector<ComplexFuncRefExpr> x = get_func_refs(f, 8);
-    vector<ComplexFuncRefExpr> X = get_func_refs(F, 8);
-    vector<ComplexFuncRefExpr> T = get_func_refs(F, 8, true);
+    vector<ComplexFuncRef> x = get_func_refs(f, 8);
+    vector<ComplexFuncRef> X = get_func_refs(F, 8);
+    vector<ComplexFuncRef> T = get_func_refs(F, 8, true);
 
     X[0] = (x[0] + x[4]);
     X[2] = (x[2] + x[6]);
@@ -257,26 +296,28 @@ ComplexFunc dftN(ComplexFunc x, int N, float sign, const string& prefix) {
     ComplexFunc X(prefix + "XN");
     if (N < 10) {
         // If N is small, unroll the loop.
-        ComplexExpr dft = x(A({Expr(0)}, args));
+        ComplexExpr dft = x(A({ Expr(0) }, args));
         for (int k = 1; k < N; k++) {
-                dft += expj((sign*2*kPi*k*n)/N) * x(A({Expr(k)}, args));
+            dft += expj((sign * 2 * kPi*k*n) / N) * x(A({ Expr(k) }, args));
         }
-        X(A({n}, args)) = dft;
-    } else {
+        X(A({ n }, args)) = dft;
+    }
+    else {
         // If N is larger, we really shouldn't be using this algorithm for the DFT anyways.
         RDom k(0, N);
-        X(A({n}, args)) = sum(expj((sign*2*kPi*k*n)/N) * x(A({k}, args)));
+        X(A({ n }, args)) = sum(expj((sign * 2 * kPi*k*n) / N) * x(A({ k }, args)));
     }
     X.unroll(n);
     return X;
 }
 
 ComplexFunc dft1d_c2c(ComplexFunc x, int N, int sign,
-                                            const string& prefix) {
+    const string& prefix) {
     switch (N) {
     case 1: return x;
     case 2: return dft2(x, prefix);
     case 4: return dft4(x, sign, prefix);
+    case 6: return dft6(x, sign, prefix);
     case 8: return dft8(x, sign, prefix);
     default: return dftN(x, N, sign, prefix);
     }
@@ -346,11 +387,11 @@ ComplexFunc fft_dim1(ComplexFunc x,
         // Load the points from each subtransform and apply the
         // twiddle factors. Twiddle factors for S = 1 are all expj(0) = 1.
         ComplexFunc v("v_" + stage_id.str());
-        ComplexExpr x_rs = x(A({n0, s + r * (N / R)}, args));
+        ComplexExpr x_rs = x(A({ n0, s + r * (N / R) }, args));
         if (S > 1) {
             x_rs = cast<float>(x_rs);
             ComplexFunc W = twiddle_factors(R * S, gain, sign, prefix, twiddle_cache);
-            v(A({r, s, n0}, args)) = select(r > 0, likely(x_rs * W(r * (s % S))), x_rs * gain);
+            v(A({ r, s, n0 }, args)) = select(r > 0, likely(x_rs * W(r * (s % S))), x_rs * gain);
 
             // Set the gain to 1 so it is only applied once.
             gain = 1.0f;
@@ -369,19 +410,19 @@ ComplexFunc fft_dim1(ComplexFunc x,
         // pass. Since the pure stage is undef, we explicitly generate the
         // arg list (because we can't use placeholders in an undef
         // definition).
-        exchange(A({n0, n1}, args)) = undef_z(V.output_types()[0]);
+        exchange(A({ n0, n1 }, args)) = undef_z(V.output_types()[0]);
 
         RDom rs(0, R, 0, N / R);
         r_ = rs.x;
         s_ = rs.y;
-        ComplexExpr V_rs = V(A({r_, s_, n0}, args));
+        ComplexExpr V_rs = V(A({ r_, s_, n0 }, args));
         if (S == N / R) {
             // In case we haven't yet applied the requested gain (i.e. there were no
             // twiddle factor steps), do so now. If gain is one, this will be a no-op.
             V_rs = V_rs * gain;
             gain = 1.0f;
         }
-        exchange(A({n0, ((s_ / S) * R * S) + (s_ % S) + (r_ * S)}, args)) = V_rs;
+        exchange(A({ n0, ((s_ / S) * R * S) + (s_ % S) + (r_ * S) }, args)) = V_rs;
         exchange.bound(n1, 0, N);
 
         if (S > 1) {
@@ -468,18 +509,18 @@ std::pair<FuncType, FuncType> tiled_transpose(FuncType f, int max_tile_size,
 
     // Break the transposed DFT into 4x4 tiles.
     FuncType f_tiled(prefix + "tiled");
-    f_tiled(A({x, y, xo, yo}, args)) = f(A({xo * tile_size + x, yo * tile_size + y}, args));
+    f_tiled(A({ x, y, xo, yo }, args)) = f(A({ xo * tile_size + x, yo * tile_size + y }, args));
 
     // transpose the values within each tile.
     FuncType f_tiledT(prefix + "tiledT");
-    f_tiledT(A({y, x, xo, yo}, args)) = f_tiled(A({x, y, xo, yo}, args));
+    f_tiledT(A({ y, x, xo, yo }, args)) = f_tiled(A({ x, y, xo, yo }, args));
 
     FuncType fT_tiled(prefix + "T_tiled");
-    fT_tiled(A({y, x, yo, xo}, args)) = f_tiledT(A({y, x, xo, yo}, args));
+    fT_tiled(A({ y, x, yo, xo }, args)) = f_tiledT(A({ y, x, xo, yo }, args));
 
     // Produce the untiled result.
     FuncType fT(prefix + "T");
-    fT(A({y, x}, args)) = fT_tiled(A({y % tile_size, x % tile_size, y / tile_size, x / tile_size}, args));
+    fT(A({ y, x }, args)) = fT_tiled(A({ y % tile_size, x % tile_size, y / tile_size, x / tile_size }, args));
 
     f_tiledT
         .vectorize(x, tile_size)
@@ -725,9 +766,9 @@ ComplexFunc fft2d_r2c(Func r,
     // Ensure the zip width divides the zipped extent.
     zip_width = gcd(zip_width, N0 / 2);
     Expr zip_n0 = (n0 / zip_width) * zip_width * 2 + (n0 % zip_width);
-    zipped(A({n0, n1}, args)) =
-        ComplexExpr(r(A({zip_n0, n1}, args)),
-                    r(A({zip_n0 + zip_width, n1}, args)));
+    zipped(A({ n0, n1 }, args)) =
+        ComplexExpr(r(A({ zip_n0, n1 }, args)),
+                    r(A({ zip_n0 + zip_width, n1 }, args)));
 
     // DFT down the columns first.
     ComplexFunc dft1 = fft_dim1(zipped,
@@ -745,8 +786,8 @@ ComplexFunc fft2d_r2c(Func r,
     // function.
     ComplexFunc unzipped(prefix + "unzipped"); {
         Expr unzip_n0 = (n0 / (zip_width * 2)) * zip_width + (n0 % zip_width);
-        ComplexExpr Z = dft1(A({unzip_n0, n1}, args));
-        ComplexExpr conjsymZ = conj(dft1(A({unzip_n0, (N1 - n1) % N1}, args)));
+        ComplexExpr Z = dft1(A({ unzip_n0, n1 }, args));
+        ComplexExpr conjsymZ = conj(dft1(A({ unzip_n0, (N1 - n1) % N1 }, args)));
 
         ComplexExpr X = Z + conjsymZ;
         ComplexExpr Y = -j * (Z - conjsymZ);
@@ -754,16 +795,16 @@ ComplexFunc fft2d_r2c(Func r,
         // instead.
         gain /= 2;
 
-        unzipped(A({n0, n1}, args)) =
+        unzipped(A({ n0, n1 }, args)) =
             select(n0 % (zip_width * 2) < zip_width, X, Y);
     }
 
     // Zip the DC and Nyquist DFT bin rows, which should be real.
     ComplexFunc zipped_0(prefix + "zipped_0");
-    zipped_0(A({n0, n1}, args)) =
-        select(n1 > 0, likely(unzipped(A({n0, n1}, args))),
-                       ComplexExpr(re(unzipped(A({n0, 0}, args))),
-                                   re(unzipped(A({n0, N1 / 2}, args)))));
+    zipped_0(A({ n0, n1 }, args)) =
+        select(n1 > 0, likely(unzipped(A({ n0, n1 }, args))),
+            ComplexExpr(re(unzipped(A({ n0, 0 }, args))),
+                re(unzipped(A({ n0, N1 / 2 }, args)))));
 
     // The vectorization of the columns must not exceed this value.
     int zipped_extent0 = std::min((N1 + 1) / 2, zip_width);
@@ -798,24 +839,24 @@ ComplexFunc fft2d_r2c(Func r,
     RDom n0z1(1, N0 / 2);
     RDom n0z2(N0 / 2, N0 / 2);
     // Update 0: Unzip the DC bin of the DFT of the Nyquist bin row.
-    dft(A({0, N1 / 2}, args)) = im(dft(A({0, 0}, args)));
+    dft(A({ 0, N1 / 2 }, args)) = im(dft(A({ 0, 0 }, args)));
     // Update 1: Unzip the rest of the DFT of the Nyquist bin row.
-    dft(A({n0z1, N1 / 2}, args)) =
-        0.5f * -j * (dft(A({n0z1, 0}, args)) - conj(dft(A({N0 - n0z1, 0}, args))));
+    dft(A({ n0z1, N1 / 2 }, args)) =
+        0.5f * -j * (dft(A({ n0z1, 0 }, args)) - conj(dft(A({ N0 - n0z1, 0 }, args))));
     // Update 2: Compute the rest of the Nyquist bin row via conjugate symmetry.
     // Note that this redundantly computes n0 = N0/2, but that's faster and easier
     // than trying to deal with N0/2 - 1 bins.
-    dft(A({n0z2, N1 / 2}, args)) = conj(dft(A({N0 - n0z2, N1 / 2}, args)));
+    dft(A({ n0z2, N1 / 2 }, args)) = conj(dft(A({ N0 - n0z2, N1 / 2 }, args)));
 
     // Update 3: Unzip the DC bin of the DFT of the DC bin row.
-    dft(A({0, 0}, args)) = re(dft(A({0, 0}, args)));
+    dft(A({ 0, 0 }, args)) = re(dft(A({ 0, 0 }, args)));
     // Update 4: Unzip the rest of the DFT of the DC bin row.
-    dft(A({n0z1, 0}, args)) =
-        0.5f * (dft(A({n0z1, 0}, args)) + conj(dft(A({N0 - n0z1, 0}, args))));
+    dft(A({ n0z1, 0 }, args)) =
+        0.5f * (dft(A({ n0z1, 0 }, args)) + conj(dft(A({ N0 - n0z1, 0 }, args))));
     // Update 5: Compute the rest of the DC bin row via conjugate symmetry.
     // Note that this redundantly computes n0 = N0/2, but that's faster and easier
     // than trying to deal with N0/2 - 1 bins.
-    dft(A({n0z2, 0}, args)) = conj(dft(A({N0 - n0z2, 0}, args)));
+    dft(A({ n0z2, 0 }, args)) = conj(dft(A({ N0 - n0z2, 0 }, args)));
 
     // Schedule.
     dftT.compute_at(dft, outer);
@@ -847,7 +888,7 @@ ComplexFunc fft2d_r2c(Func r,
 
     // Schedule the final DFT transpose and unzipping updates.
     dft.vectorize(n0, target.natural_vector_size<float>())
-        .unroll(n0, std::min(N0 / target.natural_vector_size<float>(), 4));
+        .unroll(n0, gcd(N0 / target.natural_vector_size<float>(), 4));
 
     // The Nyquist bin at n0z = N0/2 looks like a race condition because it
     // simplifies to an expression similar to the DC bin. However, we include it
@@ -901,9 +942,9 @@ Func fft2d_c2r(ComplexFunc c,
     // scheduling done by tiled_transpose below.
     ComplexFunc c_zipped(prefix + "c_zipped"); {
         // Stuff the Nyquist bin DFT into the imaginary part of the DC bin DFT.
-        ComplexExpr X = c(A({n0, 0}, args));
-        ComplexExpr Y = c(A({n0, N1 / 2}, args));
-        c_zipped(A({n0, n1}, args)) = select(n1 > 0, likely(c(A({n0, n1}, args))), X + j * Y);
+        ComplexExpr X = c(A({ n0, 0 }, args));
+        ComplexExpr Y = c(A({ n0, N1 / 2 }, args));
+        c_zipped(A({ n0, n1 }, args)) = select(n1 > 0, likely(c(A({ n0, n1 }, args))), X + j * Y);
     }
 
     // transpose the input.
@@ -934,10 +975,10 @@ Func fft2d_c2r(ComplexFunc c,
 
     // Unzip the DC and Nyquist DFTs.
     ComplexFunc dft0_unzipped("dft0_unzipped"); {
-        dft0_unzipped(A({n0, n1}, args)) =
-                select(n1 <= 0,      re(dft0(A({n0, 0}, args))),
-                       n1 >= N1 / 2, im(dft0(A({n0, 0}, args))),
-                                     likely(dft0(A({n0, min(n1, (N1 / 2) - 1)}, args))));
+        dft0_unzipped(A({ n0, n1 }, args)) =
+            select(n1 <= 0, re(dft0(A({ n0, 0 }, args))),
+                n1 >= N1 / 2, im(dft0(A({ n0, 0 }, args))),
+                likely(dft0(A({ n0, min(n1, (N1 / 2) - 1) }, args))));
     }
 
     ComplexFunc dft0_bounded =
@@ -958,14 +999,14 @@ Func fft2d_c2r(ComplexFunc c,
         Expr n0_X = (n0 / zip_width) * zip_width * 2 + (n0 % zip_width);
         Expr n1_sym = (N1 - n1) % N1;
         ComplexExpr X = select(n1 < N1 / 2,
-                               dft0_bounded(A({n0_X, n1}, args)),
-                               conj(dft0_bounded(A({n0_X, n1_sym}, args))));
+            dft0_bounded(A({ n0_X, n1 }, args)),
+            conj(dft0_bounded(A({ n0_X, n1_sym }, args))));
 
         Expr n0_Y = n0_X + zip_width;
         ComplexExpr Y = select(n1 < N1 / 2,
-                               dft0_bounded(A({n0_Y, n1}, args)),
-                               conj(dft0_bounded(A({n0_Y, n1_sym}, args))));
-        zipped(A({n0, n1}, args)) = X + j * Y;
+            dft0_bounded(A({ n0_Y, n1 }, args)),
+            conj(dft0_bounded(A({ n0_Y, n1_sym }, args))));
+        zipped(A({ n0, n1 }, args)) = X + j * Y;
     }
 
     // Take the inverse DFT of the columns again.
@@ -984,10 +1025,10 @@ Func fft2d_c2r(ComplexFunc c,
     // Extract the real inverse DFTs.
     Func unzipped(prefix + "unzipped"); {
         Expr unzip_n0 = (n0 / (zip_width * 2)) * zip_width + (n0 % zip_width);
-        unzipped(A({n0, n1}, args)) =
+        unzipped(A({ n0, n1 }, args)) =
             select(n0 % (zip_width * 2) < zip_width,
-                   re(dft_padded(A({unzip_n0, n1}, args))),
-                   im(dft_padded(A({unzip_n0, n1}, args))));
+                re(dft_padded(A({ unzip_n0, n1 }, args))),
+                im(dft_padded(A({ unzip_n0, n1 }, args))));
     }
 
     // Schedule.
@@ -1017,7 +1058,7 @@ Func fft2d_c2r(ComplexFunc c,
     // logic.
     unzipped
         .vectorize(n0, zip_width)
-        .unroll(n0, std::min(N0 / zip_width, 4));
+        .unroll(n0, gcd(N0 / zip_width, 4));
 
     return unzipped;
 }
@@ -1036,7 +1077,7 @@ vector<int> radix_factor(int N) {
     }
 
     // Factor N into factors found in the 'radices' set.
-    static const int radices[] = { 8, 4, 2 };
+    static const int radices[] = { 8, 6, 4, 2 };
     vector<int> R;
     for (int r : radices) {
         while (N % r == 0) {
