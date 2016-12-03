@@ -66,7 +66,7 @@ class Halide(object):
                  builddir=[], recompile=False, target='host',
                  generator_name=[], generator_param=[],
                  external_source=[], external_libs=[],
-                 compile_flags=[], cleansource=True, verbose=False):
+                 compile_flags=[], cleansource=True, verbose=True):
         """ Compiles and runs a halide pipeline defined in a generator file ``filepath``
             If recompile is not enabled, first, the library is searched and then loaded.
             Otherwise it is recompiled and a new library is defined.
